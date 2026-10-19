@@ -12,7 +12,6 @@ except ImportError:
 
 
 def naive_gru(x, w_ih, w_hh, b_ih, b_hh):
-    """naive gru - implemented from scratch"""
     batch, seq_len, _ = x.shape
     h = x.new_zeros(batch, w_hh.shape[1])
     outputs = []
@@ -30,7 +29,6 @@ def naive_gru(x, w_ih, w_hh, b_ih, b_hh):
 
 
 def load_liquidity_gru(path):
-    """gru layer of the trained timeseriesGRU from liquidity project"""
     sd = torch.load(path, map_location=DEVICE)
     sd = {k[len("gru."):]: v for k, v in sd.items() if k.startswith("gru.")}
     assert "weight_ih_l1" not in sd, "one layer only"
@@ -61,6 +59,20 @@ def time_fn(fn, warmup=10, iters=50):
     return (time.perf_counter() - t0) * 1000 / iters
 
 
+def check(name, fn, gru, atol=1e-5):
+    x = torch.randn(8, 20, gru.input_size, device=DEVICE)
+    with torch.no_grad():
+        ref, _ = gru(x)
+        try:
+            out = fn(x, *params_of(gru))
+        except NotImplementedError:
+            return False
+    err = (out - ref).abs().max().item()
+    assert err < atol, f"{name} disagrees with nn.GRU: max abs error {err:.2e}"
+    print(f"correctness OK: {name} vs nn.GRU, max abs error {err:.2e}")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights", help="state_dict of the trained TimeSeriesGRU")
@@ -75,9 +87,15 @@ def main():
         gru = nn.GRU(22, 32, batch_first=True).to(DEVICE).eval()
         print("liquidity GRU: random weights, same shape (pass --weights for the trained model)")
 
-   
+    check("naive", naive_gru, gru)
+    ready = custom_gru is not None and check("custom", custom_gru, gru)
+    if not ready:
+        print("custom kernel: not written yet, skipping that column")
+
     configs = [(32, 20), (32, 100), (256, 100), (1024, 100)]
     header = f"{'batch':>6} {'seq':>5} | {'naive ms':>9} {'nn.GRU ms':>10}"
+    if ready:
+        header += f" {'custom ms':>10} {'custom/nn.GRU':>14}"
     print("\n" + header)
     for batch, seq_len in configs:
         x = torch.randn(batch, seq_len, gru.input_size, device=DEVICE)
